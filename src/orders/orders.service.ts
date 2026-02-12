@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order } from './orders.entity';
@@ -10,6 +10,8 @@ import { DataSource } from 'typeorm';
 
 @Injectable()
 export class OrdersService {
+    private readonly logger = new Logger(OrdersService.name);
+
     constructor(
         @InjectRepository(Order)
         private readonly orderRepo: Repository<Order>,
@@ -23,11 +25,112 @@ export class OrdersService {
     ) { }
 
     async getAllOrders(): Promise<Order[]> {
-        return this.orderRepo.find({ relations: ['items', 'user'] });
+        return this.orderRepo.find({ relations: ['items', 'items.product', 'user'] });
+    }
+
+    async getOrders(
+        filter?: { status?: Order['status']; dateFrom?: string | Date; dateTo?: string | Date },
+        pagination?: { limit?: number; offset?: number },
+    ): Promise<Order[]> {
+        try {
+            const qb = this.orderRepo
+                .createQueryBuilder('order')
+                .leftJoinAndSelect('order.items', 'items')
+                .leftJoinAndSelect('items.product', 'product')
+                .leftJoinAndSelect('order.user', 'user');
+
+            if (filter?.status) {
+                qb.andWhere('order.status = :status', { status: filter.status });
+            }
+
+            if (filter?.dateFrom) {
+                const dateFrom = typeof filter.dateFrom === 'string' ? new Date(filter.dateFrom) : filter.dateFrom;
+                qb.andWhere('order.createdAt >= :dateFrom', { dateFrom });
+            }
+
+            if (filter?.dateTo) {
+                const dateTo = typeof filter.dateTo === 'string' ? new Date(filter.dateTo) : filter.dateTo;
+                qb.andWhere('order.createdAt <= :dateTo', { dateTo });
+            }
+
+            // stable ordering for consistent pagination
+            qb.orderBy('order.createdAt', 'DESC').addOrderBy('order.id', 'DESC');
+
+            const limit = pagination?.limit ?? 10;
+            const offset = pagination?.offset ?? 0;
+
+            qb.take(limit).skip(offset);
+
+            return await qb.getMany();
+        } catch (err) {
+            this.logger.error('Failed to get orders', (err as Error).stack ?? err);
+            throw new InternalServerErrorException('Internal server error');
+        }
+    }
+
+    async getOrdersConnection(
+        filter?: { status?: Order['status']; dateFrom?: string | Date; dateTo?: string | Date },
+        pagination?: { limit?: number; offset?: number },
+    ): Promise<{
+        nodes: Order[];
+        totalCount: number;
+        pageInfo: {
+            hasNextPage: boolean;
+            hasPreviousPage: boolean;
+            startCursor?: string;
+            endCursor?: string;
+        };
+    }> {
+        try {
+            const limit = pagination?.limit ?? 10;
+            const offset = pagination?.offset ?? 0;
+
+            // Build count query with same filters
+            const countQb = this.orderRepo.createQueryBuilder('order');
+
+            if (filter?.status) {
+                countQb.andWhere('order.status = :status', { status: filter.status });
+            }
+
+            if (filter?.dateFrom) {
+                const dateFrom = typeof filter.dateFrom === 'string' ? new Date(filter.dateFrom) : filter.dateFrom;
+                countQb.andWhere('order.createdAt >= :dateFrom', { dateFrom });
+            }
+
+            if (filter?.dateTo) {
+                const dateTo = typeof filter.dateTo === 'string' ? new Date(filter.dateTo) : filter.dateTo;
+                countQb.andWhere('order.createdAt <= :dateTo', { dateTo });
+            }
+
+            const totalCount = await countQb.getCount();
+
+            // Get paginated nodes (reuses same filters & relations)
+            const nodes = await this.getOrders(filter, pagination);
+
+            const hasNextPage = offset + limit < totalCount;
+            const hasPreviousPage = offset > 0;
+
+            const startCursor = nodes.length > 0 ? Buffer.from(`offset:${offset}`).toString('base64') : undefined;
+            const endCursor = nodes.length > 0 ? Buffer.from(`offset:${offset + nodes.length}`).toString('base64') : undefined;
+
+            return {
+                nodes,
+                totalCount,
+                pageInfo: {
+                    hasNextPage,
+                    hasPreviousPage,
+                    startCursor,
+                    endCursor,
+                },
+            };
+        } catch (err) {
+            this.logger.error('Failed to get orders connection', (err as Error).stack ?? err);
+            throw new InternalServerErrorException('Internal server error');
+        }
     }
 
     async getOrderById(id: number): Promise<Order> {
-        const order = await this.orderRepo.findOne({ where: { id }, relations: ['items', 'user'] });
+        const order = await this.orderRepo.findOne({ where: { id }, relations: ['items', 'items.product', 'user'] });
         if (!order) throw new NotFoundException(`Order ${id} not found`);
         return order;
     }
@@ -44,27 +147,26 @@ export class OrdersService {
         await queryRunner.startTransaction();
 
         try {
-            // 1. Перевірка на існуюче замовлення
+            // 1. Check existing order by idempotencyKey
             const existingOrder = await queryRunner.manager.findOne(Order, {
                 where: { idempotencyKey },
                 relations: ['items', 'items.product', 'user'],
             });
             if (existingOrder) {
-                // транзакція не створює нових даних, просто повертаємо існуюче замовлення
                 await queryRunner.rollbackTransaction();
-                return existingOrder; // NestJS віддасть 200 OK
+                return existingOrder;
             }
 
-            // 2. Перевірка користувача
+            // 2. Validate user
             const user = await queryRunner.manager.findOneBy(User, { id: dto.userId });
             if (!user) throw new BadRequestException('User not found');
 
-            // 3. Створення замовлення
+            // 3. Create order
             let total = 0;
             const order = queryRunner.manager.create(Order, { user, total: 0, idempotencyKey });
             await queryRunner.manager.save(order);
 
-            // 4. Додавання товарів + оновлення складу
+            // 4. Add items and update stock
             const items: OrderItem[] = [];
             for (const item of dto.items) {
                 const product = await queryRunner.manager.findOne(Product, {
@@ -75,7 +177,6 @@ export class OrdersService {
                 if (!product) throw new BadRequestException(`Product ${item.productId} not found`);
 
                 if (product.stock < item.quantity) {
-                    // бізнес-помилка → 409 Conflict
                     throw new ConflictException(`Not enough stock for product ${product.id}`);
                 }
 
@@ -97,14 +198,14 @@ export class OrdersService {
 
             await queryRunner.manager.save(items);
 
-            // 5. Оновлення total
+            // 5. Update total
             order.total = total;
             await queryRunner.manager.save(order);
 
             // 6. Commit
             await queryRunner.commitTransaction();
 
-            // 7. Повертаємо замовлення з усіма зв’язками
+            // 7. Return saved order with relations
             const savedOrder = await this.orderRepo.findOne({
                 where: { id: order.id },
                 relations: ['items', 'items.product', 'user'],
@@ -115,13 +216,13 @@ export class OrdersService {
         } catch (err) {
             await queryRunner.rollbackTransaction();
 
-            // бізнес-помилки повертаємо як є
+            // rethrow business errors as-is
             if (err instanceof ConflictException || err instanceof BadRequestException) {
                 throw err;
             }
 
-            // інші → 500 Internal Server Error
-            throw new InternalServerErrorException('Unexpected error occurred');
+            this.logger.error('Failed to create order', (err as Error).stack ?? err);
+            throw new InternalServerErrorException('Internal server error');
         } finally {
             await queryRunner.release();
         }

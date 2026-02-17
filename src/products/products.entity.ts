@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
+import { OrderItem } from '../order-items/order-items.entity';
 
 @Entity({ name: 's_product', schema: 'site' })
 export class Product {
@@ -19,4 +20,6 @@ export class Product {
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   updated_at: Date;
+  
+  @OneToMany(() => OrderItem, (orderItem) => orderItem.product) orderItems: OrderItem[]; // <-- додано зворотний зв’язок
 }

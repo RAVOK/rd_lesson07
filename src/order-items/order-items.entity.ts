@@ -19,11 +19,17 @@ export class OrderItem {
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   updated_at: Date;
 
-  @ManyToOne(() => Order)
+@Column({ name: 'order_id' })
+  orderId: number; // <-- явний FK для Order
+
+  @ManyToOne(() => Order, (order) => order.items)
   @JoinColumn({ name: 'order_id' })
   order: Order;
 
-  @ManyToOne(() => Product)
+  @Column({ name: 'product_id' })
+  productId: number; // <-- явний FK для Product
+
+  @ManyToOne(() => Product, (product) => product.orderItems)
   @JoinColumn({ name: 'product_id' })
   product: Product;
 }

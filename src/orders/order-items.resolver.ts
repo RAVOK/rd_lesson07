@@ -7,10 +7,12 @@ import { ProductType } from '../graphQL/types/product.type';
 
 @Resolver(() => OrderItemType)
 export class OrderItemsResolver {
-  @ResolveField(() => ProductType, { nullable: true })
-  product(@Parent() item: OrderItem, @Context() ctx) {
-    const productId = (item as any).product?.id;
-    if (!productId) return null;
-    return ctx.loaders.productLoader.load(productId);
-  }
+    @ResolveField(() => ProductType, { nullable: true })
+    product(@Parent() item: OrderItem, @Context() ctx) {
+        const productId = (item as any).product?.id;
+        /*if (!productId) return null;
+        return ctx.loaders.productLoader.load(productId);*/
+        if (!item.productId) return null;
+        return ctx.loaders.productLoader.load(item.productId);
+    }
 }

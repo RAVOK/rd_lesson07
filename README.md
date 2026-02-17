@@ -1,3 +1,44 @@
+### Доопрацювання
+1. поправив міграцію
+2. Доробив DataLoader щоб обмеження працювало не по джоіну
+3.SELECT "order"."id" AS "order_id",
+       "order"."total" AS "order_total",
+       "order"."idempotencyKey" AS "order_idempotencyKey",
+       "order"."customer_name" AS "order_customer_name",
+       "order"."status" AS "order_status",
+       "order"."created_at" AS "order_created_at",
+       "order"."updated_at" AS "order_updated_at",
+       "order"."user_id" AS "order_user_id",
+       "items"."id" AS "items_id",
+       "items"."quantity" AS "items_quantity",
+       "items"."price" AS "items_price",
+       "items"."created_at" AS "items_created_at",
+       "items"."updated_at" AS "items_updated_at",
+       "items"."order_id" AS "items_order_id",
+       "items"."product_id" AS "items_product_id",
+       "product"."id" AS "product_id",
+       "product"."name" AS "product_name",
+       "product"."price" AS "product_price",
+       "product"."stock" AS "product_stock",
+       "product"."created_at" AS "product_created_at",
+       "product"."updated_at" AS "product_updated_at",
+       "user"."id" AS "user_id",
+       "user"."email" AS "user_email",
+       "user"."name" AS "user_name",
+       "user"."password" AS "user_password"
+FROM "site"."s_order" "order"
+LEFT JOIN "site"."s_order_item" "items" ON "items"."order_id"="order"."id"
+LEFT JOIN "site"."s_product" "product" ON "product"."id"="items"."product_id"
+LEFT JOIN "site"."s_user" "user" ON "user"."id"="order"."user_id"
+WHERE "order"."id" IN (10,
+                       9)
+ORDER BY "order"."created_at" DESC,
+         "order"."id" DESC
+
+N+1 прибраний  DataLoader.
+
+
+
 ### 1.1 GraphQL module
 
 У додатку підключено GraphQL через `@nestjs/graphql` та `@nestjs/apollo` з драйвером Apollo і Express 5 (`@as-integrations/express5`). GraphQL модуль налаштовано в `AppModule` з endpoint `/graphql`, а схему будуємо у **code‑first підході**: типи і резолвери описуються декораторами TypeScript, а файл `schema.gql` генерується автоматично.

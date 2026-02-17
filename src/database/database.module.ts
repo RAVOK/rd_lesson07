@@ -5,7 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 @Module({
   imports: [
     ConfigModule.forRoot({
-      envFilePath: 'config/.env.dev', // шлях до файлу
+      envFilePath: 'config/.env.local', // шлях до файлу
       isGlobal: true,                 // робить доступним у всьому проекті
     }),
     TypeOrmModule.forRootAsync({
